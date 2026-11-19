@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+
+    function validProfile(data) {
+      return data.keys().hasOnly([
+          'username', 'displayName', 'bio', 'photoUrl', 'createdAt'
+        ])
+        && data.keys().hasAll([
+          'username', 'displayName', 'bio', 'photoUrl', 'createdAt'
+        ])
+        && data.username is string
+        && data.username.matches('^[a-z0-9_]{3,20}$')
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 50
+        && data.bio is string
+        && data.bio.size() <= 160
+        && data.photoUrl is string
+        && data.photoUrl.size() <= 2048;
+    }
+
+    match /profiles/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && validProfile(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && validProfile(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    function validConnection(data, connectionId) {
+      return data.keys().hasOnly([
+          'members', 'senderId', 'receiverId', 'status',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasAll([
+          'members', 'senderId', 'receiverId', 'status',
+          'createdAt', 'updatedAt'
+        ])
+        && data.senderId is string
+        && data.receiverId is string
+        && data.senderId != data.receiverId
+        && data.members is list
+        && data.members.size() == 2
+        && data.members[0] is string
+        && data.members[1] is string
+        && data.members[0] != data.members[1]
+        && data.senderId in data.members
+        && data.receiverId in data.members
+        // Require canonical sorted pair, so neither side can create duplicates.
+        && data.members[0] < data.members[1]
+        && connectionId == data.members[0] + '_' + data.members[1]
+        && data.status == 'pending'
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    match /connections/{connectionId} {
+      // Queries must filter with where('members', arrayContains: auth.uid).
+      allow get, list: if signedIn()
+        && request.auth.uid in resource.data.members;
+
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && validConnection(request.resource.data, connectionId)
+        && exists(/databases/$(database)/documents/profiles/$(request.resource.data.receiverId));
+
+      // Only the recipient can accept/decline a pending invitation.
+      allow update: if signedIn()
+        && resource.data.receiverId == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['accepted', 'declined']
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt']);
+
+      allow delete: if false;
+
+      function acceptedMember() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/connections/$(connectionId))
+          && get(/databases/$(database)/documents/connections/$(connectionId)).data.status == 'accepted'
+          && request.auth.uid in get(/databases/$(database)/documents/connections/$(connectionId)).data.members;
+      }
+
+      function validMessage(data) {
+        return data.text is string
+          && data.text.size() > 0
+          && data.text.size() <= 2000;
+      }
+
+      match /messages/{messageId} {
+        allow get, list: if acceptedMember();
+        allow create: if acceptedMember()
+          && request.resource.data.keys().hasOnly(['senderId', 'text', 'createdAt'])
+          && request.resource.data.keys().hasAll(['senderId', 'text', 'createdAt'])
+          && request.resource.data.senderId == request.auth.uid
+          && validMessage(request.resource.data)
+          && request.resource.data.createdAt == request.time;
+
+        // Sender can edit text; other fields, including senderId, are immutable.
+        allow update: if acceptedMember()
+          && resource.data.senderId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['text', 'editedAt'])
+          && request.resource.data.editedAt == request.time
+          && validMessage(request.resource.data);
+
+        // Deletion removes a message for every participant's live listener.
+        allow delete: if acceptedMember()
+          && resource.data.senderId == request.auth.uid;
+      }
+    }
+  }
+}

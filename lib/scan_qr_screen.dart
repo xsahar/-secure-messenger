@@ -1,10 +1,11 @@
-
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+
+import 'connection_service.dart';
 
 class ScanQrScreen extends StatefulWidget {
   const ScanQrScreen({super.key});
@@ -20,135 +21,131 @@ class _ScanQrScreenState extends State<ScanQrScreen> {
   );
 
   bool _processing = false;
+  bool _requesting = false;
 
-  void _showMessage(String message) {
+  void _notice(String message) {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
   }
 
+  Future<void> _requestContact(String uid, BuildContext dialogContext) async {
+    if (_requesting) return;
+    _requesting = true;
+    try {
+      await ConnectionService.sendRequest(uid);
+      if (dialogContext.mounted) Navigator.pop(dialogContext);
+      _notice('Contact request sent!');
+    } on StateError catch (error) {
+      _notice(error.message.toString());
+    } on FirebaseException catch (error) {
+      _notice('Request failed: ${error.code}');
+    } finally {
+      _requesting = false;
+    }
+  }
+
   Future<void> _handleScan(String rawValue) async {
     if (_processing) return;
     _processing = true;
-
-    bool cameraStopped = false;
+    var stopped = false;
 
     try {
-      // Check that the QR belongs to Secure Messenger.
       if (rawValue.length > 512) {
-        _showMessage('Invalid QR code.');
+        _notice('Invalid QR code.');
         return;
       }
 
       final decoded = jsonDecode(rawValue);
-
       if (decoded is! Map<String, dynamic> ||
           decoded['app'] != 'secure-messenger' ||
           decoded['type'] != 'profile' ||
           decoded['version'] != 1) {
-        _showMessage('This is not a Secure Messenger profile QR.');
+        _notice('Not a Secure Messenger profile code.');
         return;
       }
 
       final uid = decoded['uid'];
-
       if (uid is! String ||
           uid.isEmpty ||
           uid.length > 128 ||
           uid.contains('/')) {
-        _showMessage('Invalid profile identifier.');
+        _notice('Invalid profile identifier.');
         return;
       }
 
-      // Pause scanning while looking up the profile.
       await _controller.stop();
-      cameraStopped = true;
-
-      // Never trust a name written inside a QR code.
-      // Retrieve the real profile from Firestore using its UID.
+      stopped = true;
       final snapshot = await FirebaseFirestore.instance
           .collection('profiles')
           .doc(uid)
           .get();
 
       if (!mounted) return;
-
       if (!snapshot.exists) {
-        _showMessage('Profile not found.');
+        _notice('Profile not found.');
         return;
       }
 
-      final profile = snapshot.data()!;
-
-      final username = profile['username'] as String? ?? '';
-      final displayName =
-          profile['displayName'] as String? ?? '';
-      final bio = profile['bio'] as String? ?? '';
-
-      final isMyProfile =
-          FirebaseAuth.instance.currentUser?.uid == uid;
+      final data = snapshot.data()!;
+      final name = data['displayName'] as String? ?? 'User';
+      final username = data['username'] as String? ?? '';
+      final bio = data['bio'] as String? ?? '';
+      final isMine = FirebaseAuth.instance.currentUser?.uid == uid;
 
       await showDialog<void>(
         context: context,
-        builder: (dialogContext) {
-          return AlertDialog(
-            title: Text(
-              isMyProfile ? 'Your Profile' : 'Profile Found',
-            ),
-            content: Column(
+        builder: (dialogContext) => AlertDialog(
+          title: Text(isMine ? 'Your Profile' : 'Profile Found'),
+          content: SingleChildScrollView(
+            child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const CircleAvatar(
-                  radius: 32,
-                  child: Icon(Icons.person, size: 32),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  displayName,
-                  style: Theme.of(dialogContext)
-                      .textTheme.titleLarge,
-                ),
-                const SizedBox(height: 8),
+                const CircleAvatar(radius: 30, child: Icon(Icons.person)),
+                const SizedBox(height: 12),
+                Text(name, style: Theme.of(dialogContext).textTheme.titleLarge),
                 Text('@$username'),
                 if (bio.isNotEmpty) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Text(bio),
                 ],
-                if (isMyProfile) ...[
-                  const SizedBox(height: 12),
+                if (isMine) ...[
+                  const SizedBox(height: 8),
                   const Text('This is your own account.'),
                 ],
               ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.of(dialogContext).pop();
-                },
-                child: const Text('Close'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+            if (!isMine)
+              FilledButton.icon(
+                onPressed: () => _requestContact(uid, dialogContext),
+                icon: const Icon(Icons.person_add),
+                label: const Text('Send Request'),
               ),
-            ],
-          );
-        },
+          ],
+        ),
       );
     } on FormatException {
-      _showMessage('Invalid QR code format.');
-    } on FirebaseException catch (e) {
-      _showMessage('Could not load profile: ${e.code}');
+      _notice('Invalid QR format.');
+    } on FirebaseException catch (error) {
+      _notice('Could not load profile: ${error.code}');
     } catch (_) {
-      _showMessage('Could not scan this profile.');
+      _notice('Could not scan this profile.');
     } finally {
-      if (mounted && cameraStopped) {
+      if (mounted && stopped) {
         try {
           await _controller.start();
         } catch (_) {
-          _showMessage('Could not restart the camera.');
+          _notice('Could not restart the camera.');
         }
       }
-
       _processing = false;
     }
   }
@@ -162,9 +159,7 @@ class _ScanQrScreenState extends State<ScanQrScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scan QR Code'),
-      ),
+      appBar: AppBar(title: const Text('Scan QR Code')),
       body: Column(
         children: [
           Expanded(
@@ -172,33 +167,20 @@ class _ScanQrScreenState extends State<ScanQrScreen> {
               controller: _controller,
               onDetect: (capture) {
                 for (final barcode in capture.barcodes) {
-                  final value = barcode.rawValue;
-
-                  if (value != null) {
-                    _handleScan(value);
+                  if (barcode.rawValue != null) {
+                    _handleScan(barcode.rawValue!);
                     break;
                   }
                 }
               },
-              errorBuilder: (context, error) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      'Camera unavailable: ${error.errorCode.name}',
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                );
-              },
+              errorBuilder: (context, error) => Center(
+                child: Text('Camera unavailable: ${error.errorCode.name}'),
+              ),
             ),
           ),
           const Padding(
-            padding: EdgeInsets.all(20),
-            child: Text(
-              'Point your camera at a Secure Messenger QR code.',
-              textAlign: TextAlign.center,
-            ),
+            padding: EdgeInsets.all(16),
+            child: Text('Scan a Secure Messenger profile QR code.'),
           ),
         ],
       ),

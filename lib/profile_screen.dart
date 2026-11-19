@@ -1,3 +1,4 @@
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,8 +7,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-
-import 'scan_qr_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -35,7 +34,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   DocumentReference<Map<String, dynamic>> get _profileRef {
     final uid = FirebaseAuth.instance.currentUser!.uid;
 
-    return FirebaseFirestore.instance.collection('profiles').doc(uid);
+    return FirebaseFirestore.instance
+        .collection('profiles')
+        .doc(uid);
   }
 
   @override
@@ -115,19 +116,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile saved successfully!')),
+        const SnackBar(
+          content: Text('Profile saved successfully!'),
+        ),
       );
     } on FirebaseException catch (e) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save profile: ${e.code}')),
+        SnackBar(
+          content: Text(
+            'Could not save profile: ${e.code}',
+          ),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to save your profile.')),
+        const SnackBar(
+          content: Text('Unable to save your profile.'),
+        ),
       );
     } finally {
       if (mounted) {
@@ -155,7 +164,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not select an image.')),
+        const SnackBar(
+          content: Text('Could not select an image.'),
+        ),
       );
     }
   }
@@ -213,7 +224,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Text(
                     'QR error: $error',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.black),
+                    style: const TextStyle(
+                      color: Colors.black,
+                    ),
                   ),
                 );
               },
@@ -243,7 +256,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     // Loading screen.
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
     }
 
     // Error screen with retry button.
@@ -254,7 +269,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           children: [
             Text(_error!),
             const SizedBox(height: 12),
-            FilledButton(onPressed: _loadProfile, child: const Text('Retry')),
+            FilledButton(
+              onPressed: _loadProfile,
+              child: const Text('Retry'),
+            ),
           ],
         ),
       );
@@ -280,21 +298,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ? FileImage(_selectedImage!)
                         : null,
                     child: _selectedImage == null
-                        ? const Icon(Icons.add_a_photo, size: 36)
+                        ? const Icon(
+                            Icons.add_a_photo,
+                            size: 36,
+                          )
                         : null,
                   ),
                 ),
 
                 const SizedBox(height: 8),
 
-                const Text('Tap to choose a profile picture'),
+                const Text(
+                  'Tap to choose a profile picture',
+                ),
 
                 const SizedBox(height: 12),
 
                 // Screen title.
                 Text(
-                  _profileExists ? 'Edit Profile' : 'Create Profile',
-                  style: Theme.of(context).textTheme.headlineMedium,
+                  _profileExists
+                      ? 'Edit Profile'
+                      : 'Create Profile',
+                  style: Theme.of(context)
+                      .textTheme.headlineMedium,
                 ),
 
                 const SizedBox(height: 24),
@@ -309,9 +335,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
-                    final username = (value ?? '').trim().toLowerCase();
+                    final username =
+                        (value ?? '').trim().toLowerCase();
 
-                    if (!RegExp(r'^[a-z0-9_]{3,20}$').hasMatch(username)) {
+                    if (!RegExp(
+                      r'^[a-z0-9_]{3,20}$',
+                    ).hasMatch(username)) {
                       return 'Use 3-20 letters, numbers or _';
                     }
 
@@ -359,34 +388,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 FilledButton.icon(
                   onPressed: _saving ? null : _saveProfile,
                   icon: const Icon(Icons.save),
-                  label: Text(_saving ? 'Saving...' : 'Save Profile'),
+                  label: Text(
+                    _saving
+                        ? 'Saving...'
+                        : 'Save Profile',
+                  ),
                 ),
 
                 const SizedBox(height: 12),
 
                 // Show or hide QR code.
                 OutlinedButton.icon(
-                  onPressed: _profileExists && !_saving ? _toggleQrCode : null,
-                  icon: Icon(_showQrCode ? Icons.close : Icons.qr_code_2),
-                  label: Text(_showQrCode ? 'Hide QR Code' : 'My QR Code'),
-                ),
-
-                const SizedBox(height: 12),
-
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => const ScanQrScreen(),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('Scan QR Code'),
+                  onPressed: _profileExists && !_saving
+                      ? _toggleQrCode
+                      : null,
+                  icon: Icon(
+                    _showQrCode
+                        ? Icons.close
+                        : Icons.qr_code_2,
+                  ),
+                  label: Text(
+                    _showQrCode
+                        ? 'Hide QR Code'
+                        : 'My QR Code',
+                  ),
                 ),
 
                 // QR code appears below the button.
-                if (_showQrCode && _profileExists) _buildQrCode(),
+                if (_showQrCode && _profileExists)
+                  _buildQrCode(),
               ],
             ),
           ),

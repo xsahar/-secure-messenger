@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'profile_screen.dart';
+import 'home_screen.dart';
 
 import 'firebase_options.dart';
 import 'auth_screen.dart';
@@ -65,7 +65,7 @@ class SecureMessengerApp extends StatelessWidget {
                 ),
               ],
             ),
-          body: const ProfileScreen(),
+          body: const HomeScreen(),
           );
         },
       ),
