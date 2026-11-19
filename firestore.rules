@@ -112,9 +112,30 @@ service cloud.firestore {
           && request.resource.data.editedAt == request.time
           && validMessage(request.resource.data);
 
+        // A recipient may mark a message seen once; no other changes allowed.
+        allow update: if acceptedMember()
+          && resource.data.senderId != request.auth.uid
+          && !resource.data.keys().hasAny(['readAt'])
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['readAt'])
+          && request.resource.data.readAt == request.time;
+
         // Deletion removes a message for every participant's live listener.
         allow delete: if acceptedMember()
           && resource.data.senderId == request.auth.uid;
+      }
+
+      // Short-lived typing state, editable only by its account owner.
+      // The other accepted contact can observe it, but cannot forge it.
+      match /typing/{userId} {
+        allow get, list: if acceptedMember();
+        allow create, update: if acceptedMember()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['typing', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['typing', 'updatedAt'])
+          && request.resource.data.typing is bool
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
       }
     }
   }
