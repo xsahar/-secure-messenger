@@ -1,0 +1,49 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Storage rules read membership from the default Cloud Firestore DB.
+    function acceptedMember(connectionId) {
+      return request.auth != null
+        && firestore.exists(
+          /databases/(default)/documents/connections/$(connectionId)
+        )
+        && firestore.get(
+          /databases/(default)/documents/connections/$(connectionId)
+        ).data.status == 'accepted'
+        && request.auth.uid in firestore.get(
+          /databases/(default)/documents/connections/$(connectionId)
+        ).data.members;
+    }
+
+    function validNewMedia(fileName) {
+      return request.resource.size > 0
+        && (
+          (fileName.matches('^[A-Za-z0-9]+[.](jpg|jpeg|png|webp)$')
+            && request.resource.size <= 3 * 1024 * 1024
+            && request.resource.contentType.matches(
+              '^image/(jpeg|png|webp)$'
+            ))
+          || (fileName.matches('^[A-Za-z0-9]+[.](mp4|mov)$')
+            && request.resource.size <= 12 * 1024 * 1024
+            && request.resource.contentType.matches(
+              '^video/(mp4|quicktime)$'
+            ))
+          || (fileName.matches('^[A-Za-z0-9]+[.]m4a$')
+            && request.resource.size <= 2 * 1024 * 1024
+            && request.resource.contentType == 'audio/mp4')
+        );
+    }
+
+    match /connections/{connectionId}/{senderId}/{fileName} {
+      // Authenticated Storage SDK downloads: no public getDownloadURL links.
+      allow get: if acceptedMember(connectionId);
+      allow list: if false;
+      allow create: if acceptedMember(connectionId)
+        && request.auth.uid == senderId
+        && validNewMedia(fileName);
+      allow update: if false;
+      allow delete: if acceptedMember(connectionId)
+        && request.auth.uid == senderId;
+    }
+  }
+}

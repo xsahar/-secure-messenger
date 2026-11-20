@@ -34,6 +34,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Public encryption keys only. NEVER store private keys in Firestore.
+    // The published public key is immutable. There is intentionally no
+    // client-side key reset or replacement without a recovery protocol.
+    match /secretKeys/{userId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly([
+            'version', 'publicKey', 'createdAt'
+          ])
+        && request.resource.data.keys().hasAll([
+            'version', 'publicKey', 'createdAt'
+          ])
+        && request.resource.data.version == 1
+        && request.resource.data.publicKey is string
+        && request.resource.data.publicKey.size() == 44
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
     function validConnection(data, connectionId) {
       return data.keys().hasOnly([
           'members', 'senderId', 'receiverId', 'status',
@@ -95,18 +115,67 @@ service cloud.firestore {
           && data.text.size() <= 2000;
       }
 
+      // Standard chat attachments use Cloud Storage. Never store download
+      // tokens/URLs in Firestore: clients load using authenticated Storage SDK.
+      function validMedia(data, messageId) {
+        return data.keys().hasOnly([
+            'senderId', 'mediaType', 'storagePath', 'mediaSize',
+            'contentType', 'createdAt'
+          ])
+          && data.keys().hasAll([
+            'senderId', 'mediaType', 'storagePath', 'mediaSize',
+            'contentType', 'createdAt'
+          ])
+          && data.senderId == request.auth.uid
+          && data.createdAt == request.time
+          && data.mediaType in ['image', 'video', 'audio']
+          && data.storagePath is string
+          && data.storagePath.size() <= 250
+          && data.storagePath.matches(
+            'connections/' + connectionId + '/' + request.auth.uid
+              + '/' + messageId + '[.](jpg|jpeg|png|webp|mp4|mov|m4a)'
+          )
+          && data.mediaSize is int
+          && data.mediaSize > 0
+          && data.contentType is string
+          && (
+            (data.mediaType == 'image'
+              && data.mediaSize <= 3 * 1024 * 1024
+              && data.contentType in [
+                'image/jpeg', 'image/png', 'image/webp'
+              ]
+              && data.storagePath.matches('.*[.](jpg|jpeg|png|webp)'))
+            || (data.mediaType == 'video'
+              && data.mediaSize <= 12 * 1024 * 1024
+              && data.contentType in ['video/mp4', 'video/quicktime']
+              && data.storagePath.matches('.*[.](mp4|mov)'))
+            || (data.mediaType == 'audio'
+              && data.mediaSize <= 2 * 1024 * 1024
+              && data.contentType == 'audio/mp4'
+              && data.storagePath.matches('.*[.]m4a'))
+          );
+      }
+
       match /messages/{messageId} {
         allow get, list: if acceptedMember();
         allow create: if acceptedMember()
-          && request.resource.data.keys().hasOnly(['senderId', 'text', 'createdAt'])
-          && request.resource.data.keys().hasAll(['senderId', 'text', 'createdAt'])
-          && request.resource.data.senderId == request.auth.uid
-          && validMessage(request.resource.data)
-          && request.resource.data.createdAt == request.time;
+          && (
+            (request.resource.data.keys().hasOnly([
+                'senderId', 'text', 'createdAt'
+              ])
+              && request.resource.data.keys().hasAll([
+                'senderId', 'text', 'createdAt'
+              ])
+              && request.resource.data.senderId == request.auth.uid
+              && validMessage(request.resource.data)
+              && request.resource.data.createdAt == request.time)
+            || validMedia(request.resource.data, messageId)
+          );
 
         // Sender can edit text; other fields, including senderId, are immutable.
         allow update: if acceptedMember()
           && resource.data.senderId == request.auth.uid
+          && resource.data.keys().hasAny(['text'])
           && request.resource.data.diff(resource.data).affectedKeys()
               .hasOnly(['text', 'editedAt'])
           && request.resource.data.editedAt == request.time
@@ -123,6 +192,33 @@ service cloud.firestore {
         // Deletion removes a message for every participant's live listener.
         allow delete: if acceptedMember()
           && resource.data.senderId == request.auth.uid;
+      }
+
+      // Secret text is separate from standard plaintext /messages.
+      // Only participants can read; only the authenticated sender can create.
+      // Secret messages are immutable in this first text-only implementation.
+      match /secretMessages/{messageId} {
+        allow get, list: if acceptedMember();
+        allow create: if acceptedMember()
+          && request.resource.data.keys().hasOnly([
+              'version', 'senderId', 'createdAt',
+              'ciphertext', 'nonce', 'mac'
+            ])
+          && request.resource.data.keys().hasAll([
+              'version', 'senderId', 'createdAt',
+              'ciphertext', 'nonce', 'mac'
+            ])
+          && request.resource.data.version == 1
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.ciphertext is string
+          && request.resource.data.ciphertext.size() > 0
+          && request.resource.data.ciphertext.size() <= 20000
+          && request.resource.data.nonce is string
+          && request.resource.data.nonce.size() == 16
+          && request.resource.data.mac is string
+          && request.resource.data.mac.size() == 24;
+        allow update, delete: if false;
       }
 
       // Short-lived typing state, editable only by its account owner.

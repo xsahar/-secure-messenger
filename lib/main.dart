@@ -1,12 +1,13 @@
-
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import 'package:supabase_flutter/supabase_flutter.dart' hide User;
+import 'supabase_config.dart';
 import 'firebase_options.dart';
 import 'auth_screen.dart';
 import 'home_screen.dart';
 import 'biometric_gate.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,8 +16,18 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
+  // Connect Supabase using the current Firebase user's token.
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.publishableKey,
+    accessToken: () async {
+      return FirebaseAuth.instance.currentUser?.getIdToken();
+    },
+  );
+
   runApp(const SecureMessengerApp());
 }
+
 
 class SecureMessengerApp extends StatelessWidget {
   const SecureMessengerApp({super.key});
