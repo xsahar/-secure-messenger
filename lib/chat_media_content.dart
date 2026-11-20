@@ -141,18 +141,49 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
     }
   }
 
+  // The compact preview uses the already downloaded bytes/file.
+  // Opening the viewer never creates public download URLs.
+  void _openImage() {
+    final bytes = _image;
+    if (bytes == null || !mounted) return;
+
+    unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => _FullScreenImagePage(bytes: bytes),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openVideo() async {
+    final file = _localFile;
+    final inlinePlayer = _video;
+    if (file == null || inlinePlayer == null || !mounted) return;
+
+    // Stop inline playback while the full-screen player is shown.
+    await inlinePlayer.pause();
+    if (!mounted) return;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => _FullScreenVideoPage(filePath: file.path),
+      ),
+    );
+  }
+
   Future<void> _toggleVideo() async {
     final controller = _video;
     if (controller == null) return;
-    if (controller.value.isPlaying) {
+    if (controller.value.isPlaying && !controller.value.isCompleted) {
       await controller.pause();
     } else {
-      if (controller.value.position >= controller.value.duration) {
+      if (controller.value.isCompleted ||
+          controller.value.position >= controller.value.duration) {
         await controller.seekTo(Duration.zero);
       }
       await controller.play();
     }
-    if (mounted) setState(() {});
   }
 
   Future<void> _toggleAudio() async {
@@ -228,37 +259,94 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
       );
     }
     if (widget.mediaType == 'image' && image != null) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Image.memory(
-          image,
-          width: 220,
-          height: 220,
-          fit: BoxFit.contain,
-          errorBuilder: (_, _, _) => const Text('Unable to display image'),
+      return Semantics(
+        button: true,
+        label: 'Open photo full screen',
+        child: InkWell(
+          onTap: _openImage,
+          borderRadius: BorderRadius.circular(10),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Stack(
+              children: [
+                Image.memory(
+                  image,
+                  width: 166,
+                  height: 150,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) =>
+                      const Text('Unable to display image'),
+                ),
+                const Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Icon(
+                    Icons.fullscreen,
+                    color: Colors.white,
+                    shadows: [
+                      Shadow(color: Colors.black87, blurRadius: 7),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       );
     }
+
     if (widget.mediaType == 'video' && video != null) {
       return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
-            width: 220,
-            height: 175,
-            child: FittedBox(
-              fit: BoxFit.contain,
-              child: SizedBox(
-                width: video.value.size.width,
-                height: video.value.size.height,
-                child: VideoPlayer(video),
+          Semantics(
+            button: true,
+            label: 'Open video full screen',
+            child: InkWell(
+              onTap: _openVideo,
+              borderRadius: BorderRadius.circular(10),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Stack(
+                  children: [
+                    SizedBox(
+                      width: 175,
+                      height: 125,
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: SizedBox(
+                          width: video.value.size.width,
+                          height: video.value.size.height,
+                          child: VideoPlayer(video),
+                        ),
+                      ),
+                    ),
+                    const Positioned(
+                      top: 5,
+                      right: 5,
+                      child: Icon(
+                        Icons.fullscreen,
+                        color: Colors.white,
+                        shadows: [
+                          Shadow(color: Colors.black87, blurRadius: 7),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-          TextButton.icon(
-            onPressed: _toggleVideo,
-            icon: Icon(video.value.isPlaying ? Icons.pause : Icons.play_arrow),
-            label: Text(video.value.isPlaying ? 'Pause video' : 'Play video'),
+          ValueListenableBuilder<VideoPlayerValue>(
+            valueListenable: video,
+            builder: (context, value, child) {
+              final isPlaying = value.isPlaying && !value.isCompleted;
+              return TextButton.icon(
+                onPressed: _toggleVideo,
+                icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                label: Text(isPlaying ? 'Pause video' : 'Play video'),
+              );
+            },
           ),
         ],
       );
@@ -282,6 +370,164 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
         'audio' => 'Load voice message',
         _ => 'Load image',
       }),
+    );
+  }
+}
+
+
+/// Full-screen image viewer with pinch-to-zoom.
+/// The already-downloaded bytes never leave the app.
+class _FullScreenImagePage extends StatelessWidget {
+  const _FullScreenImagePage({required this.bytes});
+
+  final Uint8List bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Photo'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: SafeArea(
+        child: InteractiveViewer(
+          minScale: 0.8,
+          maxScale: 5,
+          child: Center(
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) =>
+                  const Text('Unable to display photo',
+                      style: TextStyle(color: Colors.white)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Full-screen video player that reuses the cached PRIVATE media file.
+/// A separate controller allows the inline preview to remain independent.
+class _FullScreenVideoPage extends StatefulWidget {
+  const _FullScreenVideoPage({required this.filePath});
+
+  final String filePath;
+
+  @override
+  State<_FullScreenVideoPage> createState() => _FullScreenVideoPageState();
+}
+
+class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
+  late final VideoPlayerController _controller;
+  bool _ready = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.file(File(widget.filePath));
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await _controller.initialize();
+      if (mounted) {
+        setState(() => _ready = true);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'Unable to open video.');
+      }
+    }
+  }
+
+  Future<void> _toggle() async {
+    if (!_ready) return;
+    final value = _controller.value;
+    if (value.isPlaying && !value.isCompleted) {
+      await _controller.pause();
+    } else {
+      if (value.isCompleted || value.position >= value.duration) {
+        await _controller.seekTo(Duration.zero);
+      }
+      await _controller.play();
+    }
+  }
+
+  @override
+  void dispose() {
+    unawaited(_controller.dispose());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Video'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: SafeArea(
+        child: _error != null
+            ? Center(
+                child: Text(
+                  _error!,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              )
+            : !_ready
+                ? const Center(child: CircularProgressIndicator())
+                : Column(
+                    children: [
+                      Expanded(
+                        child: Center(
+                          child: AspectRatio(
+                            aspectRatio: _controller.value.aspectRatio,
+                            child: VideoPlayer(_controller),
+                          ),
+                        ),
+                      ),
+                      ValueListenableBuilder<VideoPlayerValue>(
+                        valueListenable: _controller,
+                        builder: (context, value, child) {
+                          final playing =
+                              value.isPlaying && !value.isCompleted;
+                          return TextButton.icon(
+                            onPressed: _toggle,
+                            icon: Icon(
+                              playing ? Icons.pause : Icons.play_arrow,
+                            ),
+                            label: Text(
+                              playing ? 'Pause video' : 'Play video',
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.white,
+                            ),
+                          );
+                        },
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                        child: VideoProgressIndicator(
+                          _controller,
+                          allowScrubbing: true,
+                          colors: const VideoProgressColors(
+                            playedColor: Colors.white,
+                            bufferedColor: Colors.white54,
+                            backgroundColor: Colors.white24,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+      ),
     );
   }
 }

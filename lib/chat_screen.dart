@@ -11,6 +11,7 @@ import 'package:record/record.dart';
 
 import 'secret_chat_screen.dart';
 import 'chat_media_content.dart';
+import 'biometric_gate.dart';
 
 /// Standard Firestore chat. Messages are NOT end-to-end encrypted.
 class ChatScreen extends StatefulWidget {
@@ -264,14 +265,20 @@ class _ChatScreenState extends State<ChatScreen>
     try {
       final XFile? picked;
       if (type == 'image') {
-        picked = await _picker.pickImage(
-          source: ImageSource.gallery,
-          imageQuality: 65,
-          maxWidth: 1600,
-          maxHeight: 1600,
+        picked = await BiometricGate.withSystemPicker(
+          context,
+          () => _picker.pickImage(
+            source: ImageSource.gallery,
+            imageQuality: 65,
+            maxWidth: 1600,
+            maxHeight: 1600,
+          ),
         );
       } else {
-        picked = await _picker.pickVideo(source: ImageSource.gallery);
+        picked = await BiometricGate.withSystemPicker(
+          context,
+          () => _picker.pickVideo(source: ImageSource.gallery),
+        );
       }
       if (picked == null || !mounted) return;
       await _sendMediaFile(File(picked.path), type);

@@ -1,17 +1,16 @@
-# secure_messenger
+# Secure Messenger — Picker/Video UI Fix (Supabase media batch)
 
-A new Flutter project.
+This patch fixes two issues and moves the signed-in routes below the biometric lock.
 
-## Getting Started
+## Replace only these four files in `lib/`
+- `main.dart` (keeps Firebase + Supabase initialization)
+- `biometric_gate.dart` (keeps cancel/retry behavior; adds a trusted media-picker scope)
+- `chat_screen.dart` (wraps only the Android/iOS image/video picking activity)
+- `chat_media_content.dart` (video play button uses `ValueListenableBuilder` and recognizes playback completion)
 
-This project is a starting point for a Flutter application.
+The other files, Firebase Firestore rules, Supabase SQL, Supabase config URL/key, and Secret Chat are untouched.
+**Back up/commit before replacing.** The code in `main.dart` assumes your initialized app currently matches our prior version; if you've since customized that file, merge its two relevant changes rather than overwrite.
 
-A few resources to get you started if this is your first Flutter project:
+Run `flutter analyze`, then fully restart the Samsung and emulator Flutter sessions. Test: send image and short video, verify no unnecessary fingerprint prompt; play video to end and verify it says Play video; Home/back should still lock; cancel prompt in a chat must block chat contents (not reveal a pushed route).
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Security caveat: system-picker exemption is scoped to the duration of file selection. Further adversarial lifecycle/security and media-authorization tests are needed before production use.
