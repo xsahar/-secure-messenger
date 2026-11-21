@@ -8,22 +8,24 @@ import 'firebase_options.dart';
 import 'auth_screen.dart';
 import 'home_screen.dart';
 import 'biometric_gate.dart';
+import 'app_theme.dart';
+import 'chat_media_content.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-
   await Supabase.initialize(
     url: SupabaseConfig.url,
     publishableKey: SupabaseConfig.publishableKey,
-    accessToken: () async {
-      return FirebaseAuth.instance.currentUser?.getIdToken();
-    },
+    accessToken: () async => FirebaseAuth.instance.currentUser?.getIdToken(),
   );
-
+  String? lastUid = FirebaseAuth.instance.currentUser?.uid;
+  FirebaseAuth.instance.authStateChanges().listen((user) {
+    if (user?.uid != lastUid) ChatMediaContent.clearSessionMedia();
+    lastUid = user?.uid;
+  });
   runApp(const SecureMessengerApp());
 }
 
@@ -35,7 +37,7 @@ class SecureMessengerApp extends StatelessWidget {
     return MaterialApp(
       title: 'Secure Messenger',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true),
+      theme: AppTheme.dark,
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -44,41 +46,20 @@ class SecureMessengerApp extends StatelessWidget {
               body: Center(child: CircularProgressIndicator()),
             );
           }
-
           if (snapshot.hasError) {
             return const Scaffold(
               body: Center(child: Text('Unable to check login status.')),
             );
           }
-
           final user = snapshot.data;
-          if (user == null) {
-            return const AuthScreen();
-          }
-
-          // IMPORTANT: the nested Navigator keeps all chat, QR and profile
-          // routes BELOW the biometric gate. Locking now covers every route,
-          // not just the home screen.
+          if (user == null) return const AuthScreen();
+          // Chat, profile, media viewer and QR routes remain underneath the lock.
           return BiometricGate(
             key: ValueKey(user.uid),
             child: Navigator(
               onGenerateRoute: (settings) => MaterialPageRoute<void>(
                 settings: settings,
-                builder: (_) => Scaffold(
-                  appBar: AppBar(
-                    title: const Text('Secure Messenger'),
-                    actions: [
-                      IconButton(
-                        tooltip: 'Log out',
-                        icon: const Icon(Icons.logout),
-                        onPressed: () async {
-                          await FirebaseAuth.instance.signOut();
-                        },
-                      ),
-                    ],
-                  ),
-                  body: const HomeScreen(),
-                ),
+                builder: (_) => const HomeScreen(),
               ),
             ),
           );

@@ -3,10 +3,100 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
+
+
+/// Small, process-memory-only LRU cache. Account-scoped to avoid mixing users;
+/// no public URLs, persistence, or database changes. 24 MB max.
+class _MediaCache {
+  static final _stored = <String, Uint8List>{};
+  static final _pending = <String, Future<Uint8List>>{};
+  static int _bytes = 0;
+  static const _maxBytes = 24 * 1024 * 1024;
+
+  static void clear() {
+    _stored.clear();
+    _bytes = 0;
+  }
+
+  static void evict(String path) {
+    for (final key in _stored.keys.where((key) => key.endsWith('|$path')).toList()) {
+      _bytes -= _stored.remove(key)!.length;
+    }
+  }
+
+  static Future<Uint8List> get(String path, int limit) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign in to view media.');
+    final key = '$uid|$path';
+    final cached = _stored.remove(key);
+    if (cached != null) {
+      _stored[key] = cached;
+      return Future<Uint8List>.value(cached);
+    }
+    final pending = _pending[key];
+    if (pending != null) return pending;
+    final task = _download(key, uid, path, limit);
+    _pending[key] = task;
+    return task.whenComplete(() => _pending.remove(key));
+  }
+
+  static Future<Uint8List> _download(
+      String key, String uid, String path, int limit) async {
+    final data = await Supabase.instance.client.storage
+        .from('chat-media').download(path);
+    if (data.isEmpty || data.length > limit) {
+      throw StateError('Media missing or larger than allowed.');
+    }
+    // Do not retain the previous account's bytes after a login switch.
+    if (FirebaseAuth.instance.currentUser?.uid == uid &&
+        data.length <= _maxBytes) {
+      while (_bytes + data.length > _maxBytes && _stored.isNotEmpty) {
+        final oldest = _stored.keys.first;
+        _bytes -= _stored.remove(oldest)!.length;
+      }
+      _stored[key] = data;
+      _bytes += data.length;
+    }
+    return data;
+  }
+}
+
+/// Only one voice/video player can be active across open message widgets.
+class _PlaybackFocus {
+  static Object? _owner;
+  static Future<void> Function()? _pause;
+
+  static Future<void> claim(Object owner, Future<void> Function() pause) async {
+    if (identical(_owner, owner)) return;
+    final previous = _pause;
+    _owner = owner;
+    _pause = pause;
+    if (previous != null) {
+      try { await previous(); } catch (_) {}
+    }
+  }
+
+  static void release(Object owner) {
+    if (identical(_owner, owner)) {
+      _owner = null;
+      _pause = null;
+    }
+  }
+
+  static Future<void> stop() async {
+    final previous = _pause;
+    _owner = null;
+    _pause = null;
+    if (previous != null) {
+      try { await previous(); } catch (_) {}
+    }
+  }
+}
 
 /// Loads files from PRIVATE Supabase Storage using Firebase ID tokens.
 /// Never writes public or signed URLs into Firestore.
@@ -17,11 +107,23 @@ class ChatMediaContent extends StatefulWidget {
     required this.connectionId,
     required this.storagePath,
     required this.mediaType,
+    this.consentReady,
   });
 
   final String connectionId;
   final String storagePath;
   final String mediaType; // image, video, audio
+  final Future<void>? consentReady;
+
+  /// Used when the sender deletes the original file or signs out.
+  static void forgetMedia(String path) => _MediaCache.evict(path);
+  static void clearSessionMedia() {
+    _MediaCache.clear();
+    unawaited(_PlaybackFocus.stop());
+  }
+
+  /// Stop the current voice/video when the app locks or leaves a chat.
+  static Future<void> pauseAllMedia() => _PlaybackFocus.stop();
 
   @override
   State<ChatMediaContent> createState() => _ChatMediaContentState();
@@ -34,6 +136,7 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
   File? _localFile;
   bool _busy = false;
   bool _playing = false;
+  bool _resettingAudio = false;
   String? _error;
 
   bool get _validPath => widget.storagePath.startsWith(
@@ -50,9 +153,11 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
   @override
   void initState() {
     super.initState();
-    if (widget.mediaType == 'image') {
+    // Images and small voice notes prepare themselves in visible chat cells.
+    // Large videos remain lazy, but opening them needs only one tap.
+    if (widget.mediaType == 'image' || widget.mediaType == 'audio') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _load();
+        if (mounted) unawaited(_load());
       });
     }
   }
@@ -74,12 +179,10 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
       // Bucket limits files to 12 MB; Firestore rules additionally restrict
       // each media type to its smaller app-specific maximum. Downloaded files
       // are bounded again after retrieval, before display or playback.
-      final bytes = await Supabase.instance.client.storage
-          .from('chat-media')
-          .download(widget.storagePath);
-      if (bytes.isEmpty || bytes.length > _limit) {
-        throw StateError('Media missing or larger than the allowed size.');
-      }
+      final ready = widget.consentReady;
+      if (ready != null) await ready;
+      if (!mounted) return;
+      final bytes = await _MediaCache.get(widget.storagePath, _limit);
       if (widget.mediaType == 'image') {
         if (mounted) setState(() => _image = bytes);
       } else {
@@ -93,12 +196,16 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
         if (await pending.length() > _limit) {
           throw StateError('The downloaded file exceeds the allowed size.');
         }
-        if (!mounted) return;
+        if (!mounted) {
+          if (await pending.exists()) await pending.delete();
+          return;
+        }
         if (widget.mediaType == 'video') {
           final controller = VideoPlayerController.file(pending);
           await controller.initialize();
           if (!mounted) {
             await controller.dispose();
+            if (await pending.exists()) await pending.delete();
             return;
           }
           setState(() {
@@ -110,6 +217,7 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
           await player.setFilePath(pending.path);
           if (!mounted) {
             await player.dispose();
+            if (await pending.exists()) await pending.delete();
             return;
           }
           setState(() {
@@ -118,9 +226,11 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
           });
           player.playerStateStream.listen((state) {
             if (!mounted) return;
-            if (state.processingState == ProcessingState.completed) {
-              unawaited(player.seek(Duration.zero));
-              setState(() => _playing = false);
+            if (state.processingState == ProcessingState.completed &&
+                !_resettingAudio) {
+              // just_audio can keep `playing == true` at end-of-file.
+              // Pause AND seek back to zero so Replay really starts again.
+              unawaited(_resetCompletedAudio(player));
             }
           });
         }
@@ -157,14 +267,12 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
   }
 
   Future<void> _openVideo() async {
+    if (_busy) return;
+    if (_video == null) await _load();
     final file = _localFile;
-    final inlinePlayer = _video;
-    if (file == null || inlinePlayer == null || !mounted) return;
-
-    // Stop inline playback while the full-screen player is shown.
-    await inlinePlayer.pause();
+    if (file == null || !mounted) return;
+    await _PlaybackFocus.stop();
     if (!mounted) return;
-
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => _FullScreenVideoPage(filePath: file.path),
@@ -172,28 +280,43 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
     );
   }
 
-  Future<void> _toggleVideo() async {
-    final controller = _video;
-    if (controller == null) return;
-    if (controller.value.isPlaying && !controller.value.isCompleted) {
-      await controller.pause();
-    } else {
-      if (controller.value.isCompleted ||
-          controller.value.position >= controller.value.duration) {
-        await controller.seekTo(Duration.zero);
-      }
-      await controller.play();
+  Future<void> _resetCompletedAudio(AudioPlayer player) async {
+    if (_resettingAudio) return;
+    _resettingAudio = true;
+    try {
+      await player.pause();
+      await player.seek(Duration.zero);
+    } catch (_) {
+      // A disposed player should not crash the chat.
+    } finally {
+      _resettingAudio = false;
+      if (mounted) setState(() => _playing = false);
     }
+  }
+
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 
   Future<void> _toggleAudio() async {
     final player = _audio;
-    if (player == null) return;
+    if (player == null || _resettingAudio) return;
     try {
-      if (player.playing) {
+      if (player.playing &&
+          player.processingState != ProcessingState.completed) {
         await player.pause();
+        _PlaybackFocus.release(this);
         if (mounted) setState(() => _playing = false);
       } else {
+        if (player.processingState == ProcessingState.completed) {
+          await player.seek(Duration.zero);
+        }
+        await _PlaybackFocus.claim(this, () async {
+          await player.pause();
+          if (mounted) setState(() => _playing = false);
+        });
         // Do not await play(): it may finish only after playback completes.
         if (mounted) setState(() => _playing = true);
         unawaited(player.play().catchError((Object error) {
@@ -217,6 +340,7 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
 
   @override
   void dispose() {
+    _PlaybackFocus.release(this);
     final video = _video;
     final audio = _audio;
     final file = _localFile;
@@ -240,137 +364,168 @@ class _ChatMediaContentState extends State<ChatMediaContent> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final image = _image;
-    final video = _video;
     final audio = _audio;
+    final video = _video;
     if (_error != null) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-          TextButton(onPressed: _load, child: const Text('Retry')),
-        ],
-      );
-    }
-    if (_busy) {
-      return const SizedBox(
-        height: 70,
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-    if (widget.mediaType == 'image' && image != null) {
-      return Semantics(
-        button: true,
-        label: 'Open photo full screen',
-        child: InkWell(
-          onTap: _openImage,
-          borderRadius: BorderRadius.circular(10),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Stack(
-              children: [
-                Image.memory(
-                  image,
-                  width: 166,
-                  height: 150,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) =>
-                      const Text('Unable to display image'),
-                ),
-                const Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Icon(
-                    Icons.fullscreen,
-                    color: Colors.white,
-                    shadows: [
-                      Shadow(color: Colors.black87, blurRadius: 7),
-                    ],
-                  ),
-                ),
-              ],
+      return SizedBox(
+        width: 220,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Could not load media', style: TextStyle(color: scheme.error)),
+            TextButton.icon(
+              onPressed: () => unawaited(_load()),
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Retry'),
             ),
+          ],
+        ),
+      );
+    }
+    if (widget.mediaType == 'image') {
+      if (image == null) {
+        return const SizedBox(
+          width: 200, height: 160,
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        );
+      }
+      return InkWell(
+        onTap: _openImage,
+        borderRadius: BorderRadius.circular(16),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Stack(
+            children: [
+              Image.memory(image, width: 230, height: 170, fit: BoxFit.cover),
+              const Positioned(
+                right: 8, top: 8,
+                child: Icon(Icons.open_in_full_rounded, color: Colors.white),
+              ),
+            ],
           ),
         ),
       );
     }
-
-    if (widget.mediaType == 'video' && video != null) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Semantics(
-            button: true,
-            label: 'Open video full screen',
-            child: InkWell(
-              onTap: _openVideo,
-              borderRadius: BorderRadius.circular(10),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Stack(
-                  children: [
-                    SizedBox(
-                      width: 175,
-                      height: 125,
-                      child: FittedBox(
-                        fit: BoxFit.contain,
-                        child: SizedBox(
-                          width: video.value.size.width,
-                          height: video.value.size.height,
-                          child: VideoPlayer(video),
+    if (widget.mediaType == 'video') {
+      return InkWell(
+        onTap: _busy ? null : _openVideo,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          width: 230,
+          height: 132,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF1E4363), Color(0xFF152538)],
+            ),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Stack(
+            children: [
+              if (video != null)
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: video.value.size.width,
+                        height: video.value.size.height,
+                        child: VideoPlayer(video),
+                      ),
+                    ),
+                  ),
+                ),
+              Center(
+                child: _busy
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : Container(
+                        width: 56, height: 56,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          shape: BoxShape.circle,
                         ),
+                        child: const Icon(Icons.play_arrow_rounded,
+                            color: Colors.white, size: 34),
                       ),
-                    ),
-                    const Positioned(
-                      top: 5,
-                      right: 5,
-                      child: Icon(
-                        Icons.fullscreen,
-                        color: Colors.white,
-                        shadows: [
-                          Shadow(color: Colors.black87, blurRadius: 7),
-                        ],
-                      ),
-                    ),
+              ),
+              const Positioned(
+                left: 12, bottom: 9,
+                child: Row(
+                  children: [
+                    Icon(Icons.videocam_rounded, color: Colors.white70, size: 16),
+                    SizedBox(width: 5),
+                    Text('Video · Tap to watch',
+                      style: TextStyle(color: Colors.white, fontSize: 12,
+                          fontWeight: FontWeight.w600)),
                   ],
                 ),
               ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (widget.mediaType == 'audio') {
+      if (audio == null) {
+        return const SizedBox(
+          width: 224, height: 54,
+          child: Center(child: LinearProgressIndicator(minHeight: 2)),
+        );
+      }
+      return SizedBox(
+        width: 236,
+        child: Row(
+          children: [
+            IconButton.filledTonal(
+              tooltip: _playing ? 'Pause voice message' : 'Play voice message',
+              onPressed: _toggleAudio,
+              icon: Icon(_playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
             ),
-          ),
-          ValueListenableBuilder<VideoPlayerValue>(
-            valueListenable: video,
-            builder: (context, value, child) {
-              final isPlaying = value.isPlaying && !value.isCompleted;
-              return TextButton.icon(
-                onPressed: _toggleVideo,
-                icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                label: Text(isPlaying ? 'Pause video' : 'Play video'),
-              );
-            },
-          ),
-        ],
+            const SizedBox(width: 7),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Voice message',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+                  StreamBuilder<Duration>(
+                    stream: audio.positionStream,
+                    initialData: audio.position,
+                    builder: (context, snapshot) {
+                      final position = snapshot.data ?? Duration.zero;
+                      final duration = audio.duration ?? Duration.zero;
+                      final maxMs = duration.inMilliseconds > 0
+                          ? duration.inMilliseconds.toDouble() : 1.0;
+                      return Column(
+                        children: [
+                          SizedBox(
+                            height: 18,
+                            child: Slider(
+                              value: position.inMilliseconds.toDouble().clamp(0.0, maxMs).toDouble(),
+                              min: 0, max: maxMs,
+                              onChanged: (value) => unawaited(
+                                audio.seek(Duration(milliseconds: value.round()))),
+                            ),
+                          ),
+                          Text('${_formatDuration(position)} / ${_formatDuration(duration)}',
+                              style: TextStyle(fontSize: 11,
+                                  color: scheme.onSurfaceVariant)),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       );
     }
-    if (widget.mediaType == 'audio' && audio != null) {
-      return TextButton.icon(
-        onPressed: _toggleAudio,
-        icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
-        label: Text(_playing ? 'Pause voice message' : 'Play voice message'),
-      );
-    }
-    return TextButton.icon(
-      onPressed: _load,
-      icon: Icon(switch (widget.mediaType) {
-        'video' => Icons.videocam_outlined,
-        'audio' => Icons.mic_outlined,
-        _ => Icons.image_outlined,
-      }),
-      label: Text(switch (widget.mediaType) {
-        'video' => 'Load video',
-        'audio' => 'Load voice message',
-        _ => 'Load image',
-      }),
-    );
+    return const Text('Unsupported media type');
   }
 }
 
@@ -436,9 +591,13 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
   Future<void> _initialize() async {
     try {
       await _controller.initialize();
-      if (mounted) {
-        setState(() => _ready = true);
-      }
+      if (!mounted) return;
+      setState(() => _ready = true);
+      // Tapping a video preview opens AND starts it, without a second tap.
+      await _PlaybackFocus.claim(this, () async {
+        await _controller.pause();
+      });
+      if (mounted) await _controller.play();
     } catch (_) {
       if (mounted) {
         setState(() => _error = 'Unable to open video.');
@@ -455,12 +614,16 @@ class _FullScreenVideoPageState extends State<_FullScreenVideoPage> {
       if (value.isCompleted || value.position >= value.duration) {
         await _controller.seekTo(Duration.zero);
       }
+      await _PlaybackFocus.claim(this, () async {
+        await _controller.pause();
+      });
       await _controller.play();
     }
   }
 
   @override
   void dispose() {
+    _PlaybackFocus.release(this);
     unawaited(_controller.dispose());
     super.dispose();
   }

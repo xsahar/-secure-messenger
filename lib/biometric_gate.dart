@@ -9,9 +9,10 @@ class BiometricGate extends StatefulWidget {
 
   final Widget child;
 
-  /// A trusted Android/iOS system media picker temporarily obscures our app.
-  /// Do not relock merely because that picker takes focus. Outside a picker,
-  /// genuine background/resume transitions still trigger a biometric lock.
+  /// A trusted Android/iOS system picker OR one-time microphone permission
+  /// dialog temporarily obscures the app. Only suppress lifecycle relocking
+  /// while awaiting that specific system interaction. Once it finishes, normal
+  /// Home/background locking applies again.
   static Future<T> withSystemPicker<T>(
     BuildContext context,
     Future<T> Function() pick,
@@ -32,6 +33,7 @@ class _BiometricGateState extends State<BiometricGate>
   final LocalAuthentication _auth = LocalAuthentication();
 
   bool _locked = true;
+  bool _hasUnlockedOnce = false;
   bool _authenticating = false;
   bool _manualRetryRequired = false;
   int _systemPickerCount = 0;
@@ -87,6 +89,7 @@ class _BiometricGateState extends State<BiometricGate>
 
       setState(() {
         _locked = !authenticated;
+        if (authenticated) _hasUnlockedOnce = true;
         _manualRetryRequired = !authenticated;
         _error = authenticated
             ? null
@@ -142,10 +145,29 @@ class _BiometricGateState extends State<BiometricGate>
 
   @override
   Widget build(BuildContext context) {
-    if (!_locked) {
-      return widget.child;
-    }
+    // Before the first unlock, do not mount any sensitive chat routes.
+    if (!_hasUnlockedOnce) return _buildLockScreen();
 
+    // After the first unlock, keep the nested Navigator mounted when the app
+    // relocks. Offstage completely hides it and disables input; TickerMode
+    // prevents hidden animations. The lock screen is painted on top.
+    // This avoids losing the open chat route upon permission/lifecycle events.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Offstage(
+          offstage: _locked,
+          child: TickerMode(
+            enabled: !_locked,
+            child: widget.child,
+          ),
+        ),
+        if (_locked) _buildLockScreen(),
+      ],
+    );
+  }
+
+  Widget _buildLockScreen() {
     return Scaffold(
       appBar: AppBar(title: const Text('Secure Messenger')),
       body: Center(
