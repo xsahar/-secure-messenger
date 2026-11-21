@@ -13,6 +13,7 @@ import 'secret_chat_screen.dart';
 import 'chat_media_content.dart';
 import 'biometric_gate.dart';
 import 'app_theme.dart';
+import 'profile_avatar.dart';
 
 /// Standard Firestore chat. Messages are NOT end-to-end encrypted.
 class ChatScreen extends StatefulWidget {
@@ -645,12 +646,27 @@ class _ChatScreenState extends State<ChatScreen>
         titleSpacing: 0,
         title: Row(
           children: [
-            CircleAvatar(
-              backgroundColor: AppTheme.mine,
-              radius: 20,
-              child: Text(initial, style: const TextStyle(
-                color: AppTheme.accent, fontWeight: FontWeight.w800)),
-            ),
+            if (_otherUid == null)
+              CircleAvatar(
+                backgroundColor: AppTheme.mine,
+                radius: 20,
+                child: Text(initial, style: const TextStyle(
+                  color: AppTheme.accent, fontWeight: FontWeight.w800)),
+              )
+            else
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('profiles').doc(_otherUid!).snapshots(),
+                builder: (context, snapshot) {
+                  final path = snapshot.data?.data()?['photoUrl'] as String? ?? '';
+                  return ProfileAvatar(
+                    userId: _otherUid!,
+                    storagePath: path,
+                    displayName: widget.otherName,
+                    radius: 20,
+                  );
+                },
+              ),
             const SizedBox(width: 11),
             Expanded(child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -659,7 +675,7 @@ class _ChatScreenState extends State<ChatScreen>
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 17,
                     fontWeight: FontWeight.w800)),
-                const Text('Standard conversation',
+                const Text('Standard chat',
                   style: TextStyle(fontSize: 11,
                     color: AppTheme.secondary)),
               ],
@@ -667,6 +683,25 @@ class _ChatScreenState extends State<ChatScreen>
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'About standard chat privacy',
+            icon: const Icon(Icons.info_outline_rounded,
+              color: AppTheme.secondary, size: 20),
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                title: const Text('Standard chat privacy'),
+                content: const Text(
+                  'Standard messages and media are stored on Firebase and '
+                  'Supabase. They are not end-to-end encrypted. '
+                  'Use the lock button for encrypted Secret Chat text.'),
+                actions: [TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Close'),
+                )],
+              ),
+            ),
+          ),
           IconButton.filledTonal(
             tooltip: 'Open encrypted secret chat',
             icon: const Icon(Icons.lock_rounded,
@@ -685,25 +720,6 @@ class _ChatScreenState extends State<ChatScreen>
       ),
       body: Column(
         children: [
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(14, 7, 14, 5),
-            padding: const EdgeInsets.symmetric(
-              vertical: 9, horizontal: 12),
-            decoration: BoxDecoration(
-              color: AppTheme.surface,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Row(children: [
-              Icon(Icons.info_outline_rounded,
-                size: 16, color: AppTheme.secondary),
-              SizedBox(width: 9),
-              Expanded(child: Text(
-                'Standard chat is not end-to-end encrypted. Use the lock for Secret Chat.',
-                style: TextStyle(fontSize: 11,
-                  color: AppTheme.secondary))),
-            ]),
-          ),
           _otherTypingIndicator(),
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(

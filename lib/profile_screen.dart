@@ -9,6 +9,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'app_theme.dart';
 import 'biometric_gate.dart';
+import 'profile_avatar.dart';
+import 'profile_photo_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -28,6 +30,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _showQrCode = false;
   String? _error;
   File? _selectedImage;
+  String _photoPath = '';
 
   DocumentReference<Map<String, dynamic>> get _profileRef =>
       FirebaseFirestore.instance.collection('profiles')
@@ -48,6 +51,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _username.text = data?['username'] ?? '';
       _displayName.text = data?['displayName'] ?? '';
       _bio.text = data?['bio'] ?? '';
+      _photoPath = data?['photoUrl'] as String? ?? '';
       setState(() {
         _profileExists = snapshot.exists;
         _loading = false;
@@ -74,47 +78,78 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (!_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
     setState(() => _saving = true);
-    final data = <String, dynamic>{
-      'username': _username.text.trim().toLowerCase(),
-      'displayName': _displayName.text.trim(),
-      'bio': _bio.text.trim(),
-    };
+    String? newlyUploadedPath;
     try {
+      final data = <String, dynamic>{
+        'username': _username.text.trim().toLowerCase(),
+        'displayName': _displayName.text.trim(),
+        'bio': _bio.text.trim(),
+      };
+
+      // The upload is private. Firestore stores only the authenticated
+      // Storage object path, NEVER a public download URL.
+      if (_selectedImage != null) {
+        newlyUploadedPath = await ProfilePhotoService.upload(_selectedImage!);
+        data['photoUrl'] = newlyUploadedPath;
+      }
+
       if (_profileExists) {
         await _profileRef.update(data);
       } else {
         await _profileRef.set({
           ...data,
-          'photoUrl': '',
+          'photoUrl': newlyUploadedPath ?? '',
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
+
+      final oldPath = _photoPath;
       if (!mounted) return;
-      setState(() => _profileExists = true);
+      setState(() {
+        _profileExists = true;
+        if (newlyUploadedPath != null) {
+          _photoPath = newlyUploadedPath;
+          _selectedImage = null;
+        }
+      });
+
+      if (newlyUploadedPath != null && oldPath.isNotEmpty &&
+          oldPath != newlyUploadedPath) {
+        await ProfilePhotoService.removeOwn(oldPath);
+      }
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile saved successfully!')));
-    } on FirebaseException catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save profile: ${error.code}')));
+        const SnackBar(content: Text('Profile and photo saved.')),
+      );
+    } catch (error) {
+      // Don't leak an orphaned uploaded photo if Firestore rejects the save.
+      if (newlyUploadedPath != null) {
+        await ProfilePhotoService.removeOwn(newlyUploadedPath);
       }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to save your profile.')));
-      }
+      if (!mounted) return;
+      final message = error is FirebaseException
+          ? 'Could not save profile: ${error.code}'
+          : error is StateError
+              ? error.message.toString()
+              : 'Could not upload photo. Check the Supabase profile-photos bucket and rules.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
+
 
   Future<void> _pickImage() async {
     try {
       final image = await BiometricGate.withSystemPicker(context,
         () => ImagePicker().pickImage(
           source: ImageSource.gallery,
-          maxWidth: 1024,
-          imageQuality: 80,
+          maxWidth: 800,
+          maxHeight: 800,
+          imageQuality: 70,
           requestFullMetadata: false,
         ),
       );
@@ -122,15 +157,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
         setState(() => _selectedImage = File(image.path));
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text(
-            'Photo preview only. Profile photo syncing is not enabled yet.')));
+            'Photo selected. Tap Save profile to upload it securely.')),
+        );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not select an image.')));
+          const SnackBar(content: Text('Could not select an image.')),
+        );
       }
     }
   }
+
 
   void _toggleQrCode() {
     if (!_profileExists || _saving) return;
@@ -143,6 +181,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final qrData = jsonEncode({
       'app': 'secure-messenger', 'type': 'profile',
       'version': 1, 'uid': uid,
+      // Non-secret profile information makes the QR self-describing.
+      // The scanner still loads the trusted profile from Firestore by UID.
+      'username': _username.text.trim().toLowerCase(),
+      'displayName': _displayName.text.trim(),
     });
     return Container(
       width: double.infinity,
@@ -171,7 +213,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
         const SizedBox(height: 14),
-        const Text('Others can scan this to find your account.',
+        const Text('Scan to see my username, display name and profile.',
           style: TextStyle(color: AppTheme.secondary, fontSize: 12),
           textAlign: TextAlign.center),
       ]),
@@ -200,7 +242,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ));
     }
     final display = _displayName.text.trim();
-    final initial = display.isEmpty ? 'S' : display[0].toUpperCase();
     return Center(child: SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(17, 8, 17, 30),
       child: ConstrainedBox(
@@ -222,16 +263,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 child: Column(children: [
                   Stack(children: [
-                    CircleAvatar(
-                      radius: 45,
-                      backgroundColor: AppTheme.background,
-                      backgroundImage: _selectedImage != null
-                          ? FileImage(_selectedImage!) : null,
-                      child: _selectedImage == null
-                          ? Text(initial, style: const TextStyle(
-                              fontSize: 35, color: AppTheme.accent,
-                              fontWeight: FontWeight.w800)) : null,
-                    ),
+                    if (_selectedImage != null)
+                      CircleAvatar(
+                        radius: 45,
+                        backgroundColor: AppTheme.background,
+                        backgroundImage: FileImage(_selectedImage!),
+                      )
+                    else
+                      ProfileAvatar(
+                        userId: FirebaseAuth.instance.currentUser!.uid,
+                        storagePath: _photoPath,
+                        displayName: display,
+                        radius: 45,
+                      ),
                     Positioned(
                       bottom: 0, right: 0,
                       child: InkWell(
@@ -253,7 +297,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       'Choose how people can find you',
                     style: const TextStyle(color: AppTheme.secondary)),
                   const SizedBox(height: 8),
-                  const Text('Profile photo is a local preview',
+                  const Text('Profile photo syncs securely when you save',
                     style: TextStyle(color: AppTheme.secondary, fontSize: 11)),
                 ]),
               ),

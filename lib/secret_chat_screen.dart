@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'secret_crypto.dart';
+import 'app_theme.dart';
+import 'profile_avatar.dart';
 
 import 'package:secure_messenger/secret_key_service.dart';
 
@@ -25,6 +27,7 @@ class _SecretChatScreenState extends State<SecretChatScreen> {
   final _controller = TextEditingController();
   final _decryptionCache = <String, Future<String>>{};
   SecretChatSession? _session;
+  String? _peerUid;
   String? _error;
   bool _loading = true;
   bool _sending = false;
@@ -69,6 +72,7 @@ class _SecretChatScreenState extends State<SecretChatScreen> {
       if (!mounted) return;
       setState(() {
         _session = session;
+        _peerUid = peerUid;
         _decryptionCache.clear();
       });
     } catch (error) {
@@ -204,8 +208,68 @@ class _SecretChatScreenState extends State<SecretChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Secret: ${widget.otherName}'),
+        titleSpacing: 0,
+        title: Row(
+          children: [
+            if (_peerUid == null)
+              CircleAvatar(
+                radius: 20,
+                backgroundColor: AppTheme.mine,
+                child: Text(widget.otherName.isEmpty
+                    ? '?' : widget.otherName[0].toUpperCase(),
+                    style: const TextStyle(color: AppTheme.accent,
+                        fontWeight: FontWeight.w800)),
+              )
+            else
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('profiles').doc(_peerUid!).snapshots(),
+                builder: (context, snapshot) {
+                  final path = snapshot.data?.data()?['photoUrl'] as String? ?? '';
+                  return ProfileAvatar(
+                    userId: _peerUid!,
+                    storagePath: path,
+                    displayName: widget.otherName,
+                    radius: 20,
+                  );
+                },
+              ),
+            const SizedBox(width: 11),
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(widget.otherName, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 17,
+                        fontWeight: FontWeight.w800)),
+                const Text('Secret Â· Encrypted text',
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11,
+                        color: AppTheme.secondary)),
+              ],
+            )),
+          ],
+        ),
         actions: [
+          IconButton(
+            tooltip: 'About Secret Chat encryption',
+            icon: const Icon(Icons.info_outline_rounded),
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                title: const Text('About Secret Chat'),
+                content: const Text(
+                  'Secret Chat encrypts text on your device before upload. '
+                  'Compare encryption key fingerprints using the shield icon. '
+                  'This experimental version does not provide forward '
+                  'secrecy or multi-device key recovery.'),
+                actions: [TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Close'),
+                )],
+              ),
+            ),
+          ),
           if (_session != null)
             IconButton(
               tooltip: 'Compare encryption keys',
@@ -235,16 +299,7 @@ class _SecretChatScreenState extends State<SecretChatScreen> {
             )
           : Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Text(
-                    'Encrypted text only. Verify key fingerprints '
-                    'using the shield button. No forward secrecy '
-                    'or multi-device recovery yet.',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
+
                 Expanded(
                   child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                     stream: _messages

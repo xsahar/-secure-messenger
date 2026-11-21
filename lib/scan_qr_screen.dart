@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'connection_service.dart';
+import 'profile_avatar.dart';
 
 class ScanQrScreen extends StatefulWidget {
   const ScanQrScreen({super.key});
@@ -103,7 +104,12 @@ class _ScanQrScreenState extends State<ScanQrScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const CircleAvatar(radius: 30, child: Icon(Icons.person)),
+                ProfileAvatar(
+                  userId: uid,
+                  storagePath: data['photoUrl'] as String? ?? '',
+                  displayName: name,
+                  radius: 30,
+                ),
                 const SizedBox(height: 12),
                 Text(name, style: Theme.of(dialogContext).textTheme.titleLarge),
                 Text('@$username'),

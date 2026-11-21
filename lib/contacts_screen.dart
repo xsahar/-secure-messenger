@@ -6,6 +6,7 @@ import 'app_theme.dart';
 import 'chat_screen.dart';
 import 'connection_service.dart';
 import 'scan_qr_screen.dart';
+import 'profile_avatar.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -77,16 +78,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
-  }
-
-  Widget _avatar(String name, {double radius = 24}) {
-    final first = name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: AppTheme.mine,
-      child: Text(first, style: const TextStyle(color: AppTheme.accent,
-        fontSize: 18, fontWeight: FontWeight.w800)),
-    );
   }
 
   Widget _sectionHeader(String title, String subtitle) => Padding(
@@ -172,7 +163,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   final name = '${profile['displayName'] ?? 'User'}';
                   return ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: _avatar(name, radius: 21),
+                    leading: ProfileAvatar(
+                      userId: doc.id,
+                      storagePath: profile['photoUrl'] as String? ?? '',
+                      displayName: name,
+                      radius: 21,
+                    ),
                     title: Text(name),
                     subtitle: Text('@${profile['username'] ?? ''}'),
                     trailing: FilledButton.tonal(
@@ -215,7 +211,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
           child: ListTile(
             contentPadding: const EdgeInsets.symmetric(
                 horizontal: 13, vertical: 7),
-            leading: _avatar(name),
+            leading: ProfileAvatar(
+              userId: otherUid,
+              storagePath: profile?['photoUrl'] as String? ?? '',
+              displayName: name,
+              radius: 24,
+            ),
             title: Text(name, style: const TextStyle(
                 fontWeight: FontWeight.w800, fontSize: 15)),
             subtitle: Padding(

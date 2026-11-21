@@ -6,7 +6,15 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
-	<key>CFBundleDisplayName</key>
+    <key>NSCameraUsageDescription</key>
+    <string>Secure Messenger uses the camera to scan contact QR codes.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Secure Messenger records voice messages when you press the microphone.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Secure Messenger lets you choose photos and videos to share and set a profile photo.</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>Secure Messenger uses Face ID to unlock your signed-in conversations.</string>
+    <key>CFBundleDisplayName</key>
 	<string>Secure Messenger</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
